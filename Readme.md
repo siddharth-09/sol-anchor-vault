@@ -66,6 +66,7 @@ Closes the vault account and returns rent to the owner.
 
 ## Test ScreenShot
 
+![alt text](https://github.com/siddharth-09/sol-anchor-vault/blob/main/pics/image.png?raw=true)
 
 ## Testing
 

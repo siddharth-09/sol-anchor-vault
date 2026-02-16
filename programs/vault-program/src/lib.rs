@@ -1,5 +1,8 @@
 use anchor_lang::prelude::*;
-
+use anchor_lang::{
+    prelude::*,
+    system_program::{transfer, Transfer},
+};
 declare_id!("F7sbYCvoQVkJaAidq11SnANGj5Y8puwReQV55a5BW1qV");
 
 /*
@@ -26,63 +29,75 @@ pub enum ErrorCode {
 
 #[program]
 pub mod vault_program {
+
+
     use super::*;
 
     //Initialize
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        let vault_account = &mut ctx.accounts.vault;
-        vault_account.vault_authority = ctx.accounts.user.key();
+        let rent_exempt = Rent::get()?.minimum_balance(ctx.accounts.vault.to_account_info().data_len());
+        let cpi_program = ctx.accounts.system_program.to_account_info();
+        let cpi_accounts = Transfer{
+            from : ctx.accounts.user.to_account_info(),
+            to : ctx.accounts.vault.to_account_info()
+        };
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        transfer(cpi_ctx, rent_exempt)?;
+
+        ctx.accounts.vault_state.vault_bump = ctx.bumps.vault;
+        ctx.accounts.vault_state.state_bump = ctx.bumps.vault_state;
+
         Ok(())
     }
     //Deposit
     pub fn deposit(ctx: Context<Deposit>,amount : u64)-> Result<()>{
         let vault = &ctx.accounts.vault;
         let user = &mut ctx.accounts.user;
-        if vault.vault_authority != user.key(){
-            return Err(ErrorCode::Unauthorized.into());
-        }
+        // if vault.vault_authority != user.key(){
+        //     return Err(ErrorCode::Unauthorized.into());
+        // }
         if user.lamports() < amount {
             return Err(ErrorCode::InsufficientBalance.into());
         }
-        let ix = anchor_lang::solana_program::system_instruction::transfer(
-                user.key,
-                &vault.key(),
-                amount
-            );
-        anchor_lang::solana_program::program::invoke(
-                &ix,
-                &[
-                    user.to_account_info(),
-                    vault.to_account_info(),
-                    ctx.accounts.system_program.to_account_info()
-                ])?;
-            Ok(())
+        let cpi_program = ctx.accounts.system_program.to_account_info();
+        let cpi_accounts = Transfer{
+            from : user.to_account_info(),
+            to : vault.to_account_info()
+        };
+        let ctx = CpiContext::new(cpi_program, cpi_accounts);
+        transfer(ctx,amount)?;
+        Ok(())
     }
     //Withdraw
     pub fn withdraw(ctx: Context<Withdraw>) -> Result<()>{
         let vault = &ctx.accounts.vault;
         let user = &ctx.accounts.user;
         let balance = vault.to_account_info().lamports();
-        if vault.vault_authority != user.key(){
-            return Err(ErrorCode::Unauthorized.into());
-        }
+        // if vault.vault_authority != user.key(){
+        //     return Err(ErrorCode::Unauthorized.into());
+        // }
         if vault.to_account_info().lamports() == 0{
             return Err(ErrorCode::VaultInsufficientBalance.into());
         }
-        **vault.to_account_info().try_borrow_mut_lamports()? -= balance;
-        **user.to_account_info().try_borrow_mut_lamports()? +=balance;
-        // let ix = anchor_lang::solana_program::system_instruction::transfer(
-        //     &vault.key(),
-        //     user.key,
-        //     balance
-        // );
-        // anchor_lang::solana_program::program::invoke_signed(&ix, 
-        //     &[
-        //         user.to_account_info(),
-        //         vault.to_account_info(),
+        let vaultState = &ctx.accounts.vault_state;
+        let vaultStateKey = vaultState.key();
+        let signer_seeds: [&[&[u8]]; 1]= [&[
+            b"vault",
+            vaultStateKey.as_ref(),
+            &[ctx.accounts.vault_state.vault_bump]
+        ]];
+        let cpi_accounts = Transfer {
+            from: vault.to_account_info(),
+            to: user.to_account_info(),
+        };
+        let cpi_ctx = CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                cpi_accounts,
+        &signer_seeds,
+        );
 
-        //     ],
-        // signer)?;
+        transfer(cpi_ctx, balance)?;
+
         Ok(())
     }
     //Close
@@ -97,12 +112,18 @@ pub struct Initialize<'info>{
     pub user : Signer<'info>,
     #[account(
         init,
-        seeds = [b"vault".as_ref(),user.key().as_ref()],
+        seeds = [b"state".as_ref(),user.key().as_ref()],
         bump,
         payer = user,
-        space = 8 + 32,
+        space = VaultAccount::DISCRIMINATOR.len() + VaultAccount::INIT_SPACE,
     )]
-    pub vault : Account<'info, VaultAccount>,
+    pub vault_state : Account<'info, VaultAccount>,
+    #[account(
+        mut,
+        seeds = [b"vault",vault_state.key().as_ref()],
+        bump
+    )]
+    pub vault : SystemAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 //deposit
@@ -110,10 +131,15 @@ pub struct Initialize<'info>{
 pub struct Deposit<'info>{
     #[account(
         mut,
-        seeds = [b"vault",user.key().as_ref()],
-        bump,
+        seeds = [b"vault",vault_state.key().as_ref()],
+        bump = vault_state.vault_bump,
     )]
-    pub vault : Account<'info,VaultAccount>,
+    pub vault : SystemAccount<'info>,
+    #[account(
+        seeds = [b"state", user.key().as_ref()],
+        bump = vault_state.state_bump,
+    )]
+    pub vault_state: Account<'info, VaultAccount>,
     #[account(mut)]
     pub user : Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -124,10 +150,15 @@ pub struct Deposit<'info>{
 pub struct Withdraw<'info>{
     #[account(
         mut,
-        seeds = [b"vault",user.key().as_ref()],
-        bump
+        seeds = [b"vault",vault_state.key().as_ref()],
+        bump = vault_state.vault_bump,
     )]
-    pub vault : Account<'info,VaultAccount>,
+    pub vault : SystemAccount<'info>,
+    #[account(
+        seeds = [b"state", user.key().as_ref()],
+        bump = vault_state.state_bump,
+    )]
+    pub vault_state: Account<'info, VaultAccount>,
     #[account(mut)]
     pub user : Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -149,8 +180,9 @@ pub struct Close<'info>{
 }
 
 
-
+#[derive(InitSpace)]
 #[account]
 pub struct VaultAccount {
-    vault_authority : Pubkey
+    pub vault_bump: u8,
+    pub state_bump: u8,
 }

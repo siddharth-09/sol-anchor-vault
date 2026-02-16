@@ -13,15 +13,25 @@ describe("Vault Program", () => {
   const bob = anchor.web3.Keypair.generate();
   const anatoly = anchor.web3.Keypair.generate();
 
-  const getVaultPDA = (vaultAuthority: anchor.web3.PublicKey) => {
-    return anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("vault"), vaultAuthority.toBuffer()],
-      program.programId
-    );
-  };
+const getVaultPDA = (vaultState: anchor.web3.PublicKey) => {
+  return anchor.web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("vault"), vaultState.toBuffer()],
+    program.programId
+  );
+};
+
+const getVaultStatePda = (user: anchor.web3.PublicKey) => {
+  return anchor.web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("state"), user.toBuffer()],
+    program.programId
+  );
+};
+
   
-  const [vaultAlicePDA] = getVaultPDA(alice.publicKey);
-  const [vaultBobPDA] = getVaultPDA(bob.publicKey);
+  const [vaultStateAlicePDA] = getVaultStatePda(alice.publicKey);
+  const [vaultAlicePDA] = getVaultPDA(vaultStateAlicePDA);
+  const [vaultStateBobPDA] = getVaultStatePda(bob.publicKey);
+  const [vaultBobPDA] = getVaultPDA(vaultStateBobPDA);
 
   it("1) Initialize Alice Vault!", async () => {
 
@@ -30,35 +40,37 @@ describe("Vault Program", () => {
     const tx = await program.methods.initialize()
     .accountsStrict({
       user : alice.publicKey,
+      vaultState : vaultStateAlicePDA,
       vault : vaultAlicePDA,
       systemProgram : anchor.web3.SystemProgram.programId
     })
     .signers([alice])
     .rpc();
 
-    const vaultData = await program.account.vaultAccount.fetch(vaultAlicePDA);
-    assert.strictEqual(vaultData.vaultAuthority.toString(), alice.publicKey.toString(), "Vault authority should be Alice's public key");
 
-    // console.log("Your transaction signature", tx);
+    const vaultInfo = await provider.connection.getAccountInfo(vaultAlicePDA);
+    assert.ok(vaultInfo !== null, "Vault should exist");
+    console.log("Vault State:", vaultInfo);
   });
 
   it("2) Initialize Bob Vault!",async()=>{
     await airdrop(provider.connection,bob.publicKey);
 
-    const tx = await program.methods.initialize().accounts({
+    const tx = await program.methods.initialize().accountsStrict({
       user : bob.publicKey,
+      vaultState : vaultStateBobPDA,
       vault : vaultBobPDA,
       systemProgram : anchor.web3.SystemProgram.programId
     }).signers([bob]).rpc();
-    const vaultData = await program.account.vaultAccount.fetch(vaultBobPDA);
-    assert.strictEqual(vaultData.vaultAuthority.toString(),bob.publicKey.toString(),"Vault authority should be Bob's public key")
+    // const vaultData = await program.account.vaultAccount.fetch(vaultBobPDA);
     // console.log("Your transaction signature ",tx);
   });
   it("3) Cannot initialize vault twice (Alice tries to initialize again)", async () => {
     let flag = "This should fail";
     try {
-      await program.methods.initialize().accounts({
+      await program.methods.initialize().accountsStrict({
         user: alice.publicKey,
+        vaultState : vaultStateAlicePDA,
         vault: vaultAlicePDA,
         systemProgram: anchor.web3.SystemProgram.programId,
       }).signers([alice]).rpc();
@@ -73,10 +85,11 @@ describe("Vault Program", () => {
     let flag = "This should fail";
     try{
       //bob trying to initialize alice vault by signing it
-      const tx = await program.methods.initialize().accounts({
-        user : alice.publicKey,
-        vault : vaultAlicePDA,
-        systemProgram : anchor.web3.SystemProgram.programId
+      const tx = await program.methods.initialize().accountsStrict({
+        user: alice.publicKey,
+        vaultState : vaultStateAlicePDA,
+        vault: vaultAlicePDA,
+        systemProgram: anchor.web3.SystemProgram.programId,
       }).signers([bob]).rpc()
     }catch(error){
       flag = "Failed";
@@ -91,9 +104,10 @@ describe("Vault Program", () => {
     const userBalanceBefore = await provider.connection.getBalance(alice.publicKey);
 
     const tx = await program.methods.deposit(new anchor.BN(amount)).accountsStrict({
-      user : alice.publicKey,
-      vault : vaultAlicePDA,
-      systemProgram : anchor.web3.SystemProgram.programId
+        user: alice.publicKey,
+        vaultState : vaultStateAlicePDA,
+        vault: vaultAlicePDA,
+        systemProgram: anchor.web3.SystemProgram.programId,
     }).signers([alice]).rpc()
     const vaultBalanceAfter = await provider.connection.getBalance(vaultAlicePDA);
     const userBalanceAfter = await provider.connection.getBalance(alice.publicKey);
@@ -109,6 +123,7 @@ describe("Vault Program", () => {
 
     const tx = await program.methods.deposit(new anchor.BN(amount)).accountsStrict({
       user : bob.publicKey,
+      vaultState : vaultStateBobPDA,
       vault : vaultBobPDA,
       systemProgram : anchor.web3.SystemProgram.programId
     }).signers([bob]).rpc()
@@ -123,10 +138,11 @@ describe("Vault Program", () => {
     const vaultBalanceBefore = await provider.connection.getBalance(vaultAlicePDA);
     const userBalanceBefore = await provider.connection.getBalance(alice.publicKey);
 
-    const tx = await program.methods.withdraw().accounts({
-      user : alice.publicKey,
-      vault : vaultAlicePDA,
-      systemProgram : anchor.web3.SystemProgram.programId 
+    const tx = await program.methods.withdraw().accountsStrict({
+        user: alice.publicKey,
+        vaultState : vaultStateAlicePDA,
+        vault: vaultAlicePDA,
+        systemProgram: anchor.web3.SystemProgram.programId,
     }).signers([alice]).rpc()
 
     const vaultBalanceAfter = await provider.connection.getBalance(vaultAlicePDA);
@@ -140,10 +156,11 @@ describe("Vault Program", () => {
     const vaultBalanceBefore = await provider.connection.getBalance(vaultBobPDA);
     const userBalanceBefore = await provider.connection.getBalance(bob.publicKey);
 
-    const tx = await program.methods.withdraw().accounts({
+    const tx = await program.methods.withdraw().accountsStrict({
       user : bob.publicKey,
+      vaultState : vaultStateBobPDA,
       vault : vaultBobPDA,
-      systemProgram : anchor.web3.SystemProgram.programId 
+      systemProgram : anchor.web3.SystemProgram.programId
     }).signers([bob]).rpc()
 
     const vaultBalanceAfter = await provider.connection.getBalance(vaultAlicePDA);
